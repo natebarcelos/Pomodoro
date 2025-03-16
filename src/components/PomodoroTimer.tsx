@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 
 interface Timer {
   id: string;
@@ -22,6 +22,7 @@ export default function PomodoroTimer() {
   const [completedPomodoros, setCompletedPomodoros] = useState(0);
   const [isEditing, setIsEditing] = useState(false);
   const [editingTimer, setEditingTimer] = useState<EditingTimer | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
 
   useEffect(() => {
     let interval: number | undefined;
@@ -52,20 +53,73 @@ export default function PomodoroTimer() {
     };
   }, [isActive, timeLeft, activeTimerId, timers]);
 
-  const playNotificationSound = () => {
-    const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
-    const oscillator = audioContext.createOscillator();
-    const gainNode = audioContext.createGain();
+  // Initialize AudioContext on first user interaction
+  useEffect(() => {
+    const initAudio = () => {
+      if (!audioContextRef.current) {
+        audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
+      }
+    };
 
-    oscillator.connect(gainNode);
-    gainNode.connect(audioContext.destination);
+    // Add listeners for user interaction
+    const interactions = ['click', 'touchstart', 'keydown'];
+    interactions.forEach(event => document.addEventListener(event, initAudio, { once: true }));
 
-    oscillator.type = 'sine';
-    oscillator.frequency.setValueAtTime(880, audioContext.currentTime); // A5 note
-    gainNode.gain.setValueAtTime(0.5, audioContext.currentTime);
+    return () => {
+      interactions.forEach(event => document.removeEventListener(event, initAudio));
+    };
+  }, []);
 
-    oscillator.start();
-    oscillator.stop(audioContext.currentTime + 0.2);
+  const playNotificationSound = async () => {
+    try {
+      if (!audioContextRef.current) {
+        audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
+      }
+
+      const ctx = audioContextRef.current;
+      
+      // Resume context if it's suspended (browser autoplay policy)
+      if (ctx.state === 'suspended') {
+        await ctx.resume();
+      }
+
+      // Create a more complex sound (two tones for better notification)
+      const oscillator1 = ctx.createOscillator();
+      const oscillator2 = ctx.createOscillator();
+      const gainNode = ctx.createGain();
+
+      oscillator1.connect(gainNode);
+      oscillator2.connect(gainNode);
+      gainNode.connect(ctx.destination);
+
+      // First tone
+      oscillator1.type = 'sine';
+      oscillator1.frequency.setValueAtTime(880, ctx.currentTime); // A5 note
+      oscillator2.type = 'sine';
+      oscillator2.frequency.setValueAtTime(1108.73, ctx.currentTime); // C#6 note
+
+      // Volume envelope
+      gainNode.gain.setValueAtTime(0, ctx.currentTime);
+      gainNode.gain.linearRampToValueAtTime(0.5, ctx.currentTime + 0.1);
+      gainNode.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.5);
+
+      oscillator1.start(ctx.currentTime);
+      oscillator2.start(ctx.currentTime);
+      oscillator1.stop(ctx.currentTime + 0.5);
+      oscillator2.stop(ctx.currentTime + 0.5);
+
+      // Fallback to system notification if available
+      if ('Notification' in window && Notification.permission === 'granted') {
+        new Notification('Timer Complete!', {
+          body: 'Your mission timer has finished.',
+          icon: '/favicon.ico'
+        });
+      } else if ('Notification' in window && Notification.permission !== 'denied') {
+        Notification.requestPermission();
+      }
+    } catch (error) {
+      console.error('Error playing notification sound:', error);
+    }
   };
 
   const handleTimerComplete = () => {
